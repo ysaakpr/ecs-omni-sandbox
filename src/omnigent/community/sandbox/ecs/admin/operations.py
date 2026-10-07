@@ -353,6 +353,7 @@ def build_sandbox_section(
     capacity_provider: str,
     assign_public_ip: bool,
     idle_timeout_s: int | None,
+    idle_stop_after_s: int = 900,
 ) -> dict[str, Any]:
     """The server config's ``sandbox:`` section for this deployment, validated."""
     ecs: dict[str, Any] = {
@@ -371,6 +372,7 @@ def build_sandbox_section(
         "secrets": harness_secrets,
         "env": with_runner_passthrough(env or {}, harness_secrets),
         "log_group": outputs["LogGroupName"],
+        "idle_stop_after_s": idle_stop_after_s,
         "token_secret_prefix": names.token_secret_prefix,
         "task_family_prefix": names.task_family_prefix,
         "tags": {STACK_TAG: names.stack},

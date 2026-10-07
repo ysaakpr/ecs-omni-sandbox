@@ -15,7 +15,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Env names a literal (non-secret) passthrough may not use: the task sets them
 # itself, and a duplicate could shadow the host identity or HOME.
 RESERVED_ENV_NAMES: frozenset[str] = frozenset(
-    {"HOME", "IS_SANDBOX", "OMNIGENT_HOST_ID", "OMNIGENT_HOST_NAME", "OMNIGENT_HOST_TOKEN"}
+    {
+        "HOME",
+        "IS_SANDBOX",
+        "OMNIGENT_HOST_ID",
+        "OMNIGENT_HOST_NAME",
+        "OMNIGENT_HOST_TOKEN",
+        "OMNI_ECS_IDLE_STOP_AFTER_S",
+        "OMNI_ECS_IDLE_CPU_THRESHOLD",
+        "OMNI_ECS_IDLE_POLL_S",
+    }
 )
 
 # A literal env name containing one of these ``_``-delimited segments looks like
@@ -81,6 +90,12 @@ class EcsSandboxConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
     efs: EfsConfig | None = None
+
+    # Stop the task after this many seconds with no session and (almost) no
+    # CPU use; the next message wakes it. 0 keeps tasks running until the
+    # session is deleted. See supervisor.py.
+    idle_stop_after_s: int = Field(default=900, ge=0)
+    idle_cpu_threshold: float = Field(default=0.05, ge=0)
 
     token_secret_prefix: str = "omnigent-ecs/"  # noqa: S105 - a name prefix, not a secret
     token_kms_key_id: str | None = None

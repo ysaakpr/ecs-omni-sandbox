@@ -22,9 +22,6 @@ from omnigent.onboarding.sandboxes.kubernetes import (
     _RUN_AS_UID as RUN_AS_UID,
 )
 from omnigent.onboarding.sandboxes.kubernetes import (
-    _render_host_command as render_host_command,
-)
-from omnigent.onboarding.sandboxes.kubernetes import (
     _render_workspace_prep_command as render_workspace_prep_command,
 )
 from omnigent.onboarding.sandboxes.registry import (
@@ -46,6 +43,5 @@ __all__ = [
     "SandboxHostLauncher",
     "SandboxProviderContribution",
     "SandboxProviderMetadata",
-    "render_host_command",
     "render_workspace_prep_command",
 ]
