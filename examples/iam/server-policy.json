@@ -1,0 +1,60 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunAndStopSandboxTasks",
+      "Effect": "Allow",
+      "Action": ["ecs:RunTask", "ecs:StopTask", "ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeClusters"],
+      "Resource": "*",
+      "Condition": {"ArnEquals": {"ecs:cluster": "arn:aws:ecs:REGION:123456789012:cluster/omnigent-hosts"}}
+    },
+    {
+      "Sid": "ManageSandboxTaskDefinitions",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:RegisterTaskDefinition",
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DeleteTaskDefinitions",
+        "ecs:ListTaskDefinitions",
+        "ecs:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassOnlyTheSandboxRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::123456789012:role/omnigent-ecs-execution",
+        "arn:aws:iam::123456789012:role/omnigent-ecs-task"
+      ],
+      "Condition": {"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}}
+    },
+    {
+      "Sid": "LaunchTokenSecrets",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:CreateSecret", "secretsmanager:DeleteSecret", "secretsmanager:TagResource"],
+      "Resource": "arn:aws:secretsmanager:REGION:123456789012:secret:omnigent-ecs/*"
+    },
+    {
+      "Sid": "FindLaunchTokenSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:ListSecrets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PerSandboxAccessPoints",
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:CreateAccessPoint",
+        "elasticfilesystem:DeleteAccessPoint",
+        "elasticfilesystem:DescribeAccessPoints",
+        "elasticfilesystem:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:elasticfilesystem:REGION:123456789012:file-system/fs-0123456789abcdef0",
+        "arn:aws:elasticfilesystem:REGION:123456789012:access-point/*"
+      ]
+    }
+  ]
+}

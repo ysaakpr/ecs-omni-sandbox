@@ -1,0 +1,12 @@
+# Default gitleaks rules, plus a rule for real-looking AWS account ARNs.
+# Placeholders use the documented example account 123456789012.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-account-arn"
+description = "ARN with a real-looking AWS account id (use 123456789012 in examples)"
+regex = '''arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):'''
+secretGroup = 1
+[rules.allowlist]
+regexes = ['''123456789012''']

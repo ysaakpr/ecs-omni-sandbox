@@ -1,0 +1,12 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MountSandboxHomeOnly",
+      "Effect": "Allow",
+      "Action": ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"],
+      "Resource": "arn:aws:elasticfilesystem:REGION:123456789012:file-system/fs-0123456789abcdef0",
+      "Condition": {"Bool": {"elasticfilesystem:AccessedViaMountTarget": "true"}}
+    }
+  ]
+}

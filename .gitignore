@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets and credentials: never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+.aws/
+kubeconfig*
+*.tfstate
+*.tfstate.*
+.terraform/
+secrets.*
+*-secrets.*
+
+# Local deployment config (real ARNs and ids live here, not in git)
+server-config.local.yaml
+*.local.yaml
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

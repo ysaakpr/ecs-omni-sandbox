@@ -1,0 +1,51 @@
+# Example `sandbox:` section for the Omnigent server config
+# (<data_dir>/config.yaml, or the file named by OMNIGENT_CONFIG).
+#
+# PLACEHOLDERS ONLY. Copy to server-config.local.yaml (git-ignored) and fill in
+# your real ids there. Never commit real ARNs or ids to this repository.
+sandbox:
+  provider: ecs
+  # Public URL of the Omnigent server. Tasks dial back to it over HTTPS.
+  server_url: https://omnigent.example.com
+
+  reaper:
+    enabled: true
+    terminate_after_offline_days: 7
+
+  host_config:
+    runner:
+      # Let an idle sandbox's runner exit after 1 hour so the task stops billing.
+      idle_timeout_s: 3600
+
+  ecs:
+    cluster: omnigent-hosts
+    region: ap-south-1
+    subnets: [subnet-0123456789abcdef0, subnet-0123456789abcdef1]   # private, with NAT
+    security_groups: [sg-0123456789abcdef0]                         # egress only
+    execution_role_arn: arn:aws:iam::123456789012:role/omnigent-ecs-execution
+    task_role_arn: arn:aws:iam::123456789012:role/omnigent-ecs-task  # EFS client access only
+
+    image: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/omnigent-host:v0.17.0
+    cpu: "1024"            # 1 vCPU
+    memory: "4096"         # MiB
+    cpu_architecture: ARM64
+    capacity_provider: FARGATE        # or FARGATE_SPOT (can be interrupted)
+
+    # Env name -> Secrets Manager / SSM ARN. Values are injected by ECS.
+    # Literal values are rejected here on purpose.
+    secrets:
+      ANTHROPIC_API_KEY: arn:aws:secretsmanager:ap-south-1:123456789012:secret:omnigent/anthropic-AbCdEf
+
+    # Non-sensitive settings only. Names that look like credentials are rejected.
+    env:
+      TZ: UTC
+
+    # Persistent home directories (workspace + agent state survive stop/wake).
+    efs:
+      file_system_id: fs-0123456789abcdef0
+      root_path: /omnigent-hosts
+
+    log_group: /omnigent/ecs-hosts
+    start_timeout_s: 300
+    tags:
+      project: omnigent

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "omnigent-ecs-sandbox"
+version = "0.1.0.dev0"
+description = "AWS ECS Fargate sandbox provider for Omnigent server-managed hosts"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    # The provider hooks into Omnigent internals that change between releases.
+    # Pin exactly and bump deliberately (see CONTRIBUTING.md, "Upgrading Omnigent").
+    "omnigent==0.17.0",
+    "boto3>=1.35",
+]
+
+[project.entry-points."omnigent.sandbox_providers"]
+ecs = "omnigent.community.sandbox.ecs:contribution"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "moto[ecs,secretsmanager,efs]>=5",
+    "ruff>=0.6",
+    "pre-commit>=3.7",
+]
+
+[tool.hatch.build.targets.wheel]
+# Ships ONLY omnigent/community/sandbox/ecs/. The parent directories have no
+# __init__.py on purpose: they belong to the omnigent distribution.
+packages = ["src/omnigent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "SIM"]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]  # fake tokens in tests
