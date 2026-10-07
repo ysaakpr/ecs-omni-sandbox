@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  omni-ecs sandbox infrastructure for one Omnigent server: ECS cluster, task
+  networking, optional EFS for persistent homes, ghcr.io image cache, logs and
+  the task roles. Deployed and deleted by `omnigent-ecs setup` / `teardown`.
+
+Metadata:
+  # W1030: ExistingFileSystemId is only used when non-empty (CreateFileSystem
+  # condition), but the linter also resolves it to its "" default.
+  cfn-lint: {config: {ignore_checks: [W1030]}}
+
+Parameters:
+  StackLabel:
+    Type: String
+    AllowedPattern: "^omni-ecs-[a-z][a-z0-9-]{1,20}$"
+    Description: The stack's own name, used for naming and tagging resources.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  Subnet1:
+    Type: AWS::EC2::Subnet::Id
+  Subnet2:
+    Type: String
+    Default: ""
+  Subnet3:
+    Type: String
+    Default: ""
+  EnableEfs:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+  ExistingFileSystemId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(fs-[0-9a-f]{8,40})?$"
+    Description: Reuse a file system kept by an earlier teardown instead of creating one.
+  GhcrCredentialArn:
+    Type: String
+    Description: Secrets Manager ARN of the ghcr.io credentials (name starts with ecr-pullthroughcache/).
+  BoundaryArn:
+    Type: String
+    Description: ARN of the omni-ecs-boundary policy from the bootstrap stack.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+
+Conditions:
+  UseEfs: !Equals [!Ref EnableEfs, "true"]
+  CreateFileSystem: !And
+    - !Condition UseEfs
+    - !Equals [!Ref ExistingFileSystemId, ""]
+  HasSubnet2: !Not [!Equals [!Ref Subnet2, ""]]
+  HasSubnet3: !Not [!Equals [!Ref Subnet3, ""]]
+  MountInSubnet2: !And [!Condition UseEfs, !Condition HasSubnet2]
+  MountInSubnet3: !And [!Condition UseEfs, !Condition HasSubnet3]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref StackLabel
+      CapacityProviders: [FARGATE, FARGATE_SPOT]
+      Tags:
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${StackLabel} sandbox tasks (outbound only)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS}
+      Tags:
+        - {Key: Name, Value: !Sub "${StackLabel}-tasks"}
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseEfs
+    Properties:
+      GroupDescription: !Sub ${StackLabel} EFS mount targets
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+          Description: NFS from sandbox tasks
+      Tags:
+        - {Key: Name, Value: !Sub "${StackLabel}-efs"}
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  TaskToEfsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: UseEfs
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      DestinationSecurityGroupId: !Ref EfsSecurityGroup
+      Description: NFS to EFS
+
+  # Kept when the stack is deleted: it holds every sandbox's workspace.
+  # `omnigent-ecs teardown --delete-data` removes it explicitly.
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Condition: CreateFileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+      FileSystemTags:
+        - {Key: Name, Value: !Ref StackLabel}
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Condition: UseEfs
+    Properties:
+      FileSystemId: !If [CreateFileSystem, !Ref FileSystem, !Ref ExistingFileSystemId]
+      SubnetId: !Ref Subnet1
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Condition: MountInSubnet2
+    Properties:
+      FileSystemId: !If [CreateFileSystem, !Ref FileSystem, !Ref ExistingFileSystemId]
+      SubnetId: !Ref Subnet2
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  MountTarget3:
+    Type: AWS::EFS::MountTarget
+    Condition: MountInSubnet3
+    Properties:
+      FileSystemId: !If [CreateFileSystem, !Ref FileSystem, !Ref ExistingFileSystemId]
+      SubnetId: !Ref Subnet3
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  ImageCache:
+    Type: AWS::ECR::PullThroughCacheRule
+    Properties:
+      EcrRepositoryPrefix: !Ref StackLabel
+      UpstreamRegistry: github-container-registry
+      UpstreamRegistryUrl: ghcr.io
+      CredentialArn: !Ref GhcrCredentialArn
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /omni-ecs/${StackLabel}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  # Used by ECS itself to pull the image, write logs and inject secrets.
+  # Its credentials are never visible inside the containers.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${StackLabel}-exec
+      PermissionsBoundary: !Ref BoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {aws:SourceAccount: !Ref AWS::AccountId}
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: sandbox-secrets-and-image-cache
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni-ecs/${StackLabel}/*
+              - Effect: Allow
+                Action: [ecr:CreateRepository, ecr:BatchImportUpstreamImage]
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${StackLabel}/*
+      Tags:
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+  # The role code inside the sandbox runs as. Agents execute arbitrary code,
+  # so it gets nothing beyond mounting its own EFS home.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${StackLabel}-task
+      PermissionsBoundary: !Ref BoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {aws:SourceAccount: !Ref AWS::AccountId}
+      Policies: !If
+        - UseEfs
+        - - PolicyName: mount-sandbox-home
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: [elasticfilesystem:ClientMount, elasticfilesystem:ClientWrite]
+                  Resource: !Sub
+                    - arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${Fs}
+                    - Fs: !If [CreateFileSystem, !Ref FileSystem, !Ref ExistingFileSystemId]
+                  Condition:
+                    Bool: {elasticfilesystem:AccessedViaMountTarget: "true"}
+        - !Ref AWS::NoValue
+      Tags:
+        - {Key: omni-ecs:stack, Value: !Ref StackLabel}
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  TaskSecurityGroupId:
+    Value: !Ref TaskSecurityGroup
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+  LogGroupName:
+    Value: !Ref LogGroup
+  ImageRepositoryPrefix:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${StackLabel}
+  FileSystemId:
+    Condition: UseEfs
+    Value: !If [CreateFileSystem, !Ref FileSystem, !Ref ExistingFileSystemId]

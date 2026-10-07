@@ -9,6 +9,12 @@
         "arn:aws:secretsmanager:REGION:123456789012:secret:omnigent-ecs/*",
         "arn:aws:secretsmanager:REGION:123456789012:secret:omnigent/anthropic-*"
       ]
+    },
+    {
+      "Sid": "PullThroughCacheFirstPull",
+      "Effect": "Allow",
+      "Action": ["ecr:CreateRepository", "ecr:BatchImportUpstreamImage"],
+      "Resource": "arn:aws:ecr:REGION:123456789012:repository/ghcr/*"
     }
   ]
 }

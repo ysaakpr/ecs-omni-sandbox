@@ -16,6 +16,8 @@ This file applies to Claude Code, Codex, Cursor and any other agent working in t
 - Don't add `__init__.py` files to `src/omnigent/`, `src/omnigent/community/` or `src/omnigent/community/sandbox/`. Those packages belong to the omnigent distribution, and shipping them would overwrite its files.
 - All imports of Omnigent internals go through `_omnigent_compat.py`.
 - `taskdef.py` is pure (builds request dicts, no AWS calls); `launcher.py` makes the calls.
+- `admin/` is the `omnigent-ecs` setup command. Resource names come only from `admin/naming.py`; the bootstrap template grants access by those prefixes, so they must stay in sync (`tests/test_admin.py` checks this).
+- Setup secrets are read with a hidden prompt or `OMNI_ECS_*` env vars and go straight to Secrets Manager. Never print them, pass them to CloudFormation, or write them to the server config.
 
 ## Commands
 

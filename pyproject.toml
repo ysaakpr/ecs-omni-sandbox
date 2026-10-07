@@ -17,6 +17,9 @@ dependencies = [
     "boto3>=1.35",
 ]
 
+[project.scripts]
+omnigent-ecs = "omnigent.community.sandbox.ecs.admin.cli:main"
+
 [project.entry-points."omnigent.sandbox_providers"]
 ecs = "omnigent.community.sandbox.ecs:contribution"
 
@@ -26,6 +29,7 @@ dev = [
     "moto[ecs,secretsmanager,efs]>=5",
     "ruff>=0.6",
     "pre-commit>=3.7",
+    "cfn-lint>=1.57.2",
 ]
 
 [tool.hatch.build.targets.wheel]

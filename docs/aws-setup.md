@@ -1,6 +1,90 @@
 # AWS setup
 
-One-time setup for the `ecs` provider. All ids below are placeholders; keep your real values in a git-ignored `server-config.local.yaml`.
+All ids below are placeholders; keep your real values in a git-ignored `server-config.local.yaml`.
+
+There are two ways to set up the AWS side: the `omnigent-ecs` command (recommended), or by hand. The command creates exactly what the manual steps describe, as CloudFormation stacks, so it can update and delete everything cleanly.
+
+> The `omnigent-ecs` command and its templates have been tested against mocked AWS and checked with `cfn-lint`, but haven't been run against a real account yet. Expect the first real run to need fixes, most likely in IAM permissions.
+
+## Automated setup
+
+`omnigent-ecs` is installed with the package. It needs AWS credentials (an instance role, SSO login or similar) and a region (`--region` or `AWS_REGION`).
+
+### What you need first
+
+- **Private subnets** (1 to 3, one per availability zone) with a NAT gateway, in the VPC where tasks should run. `setup` checks the routes and refuses public subnets unless you pass `--assign-public-ip`.
+- **A GitHub token** with only the `read:packages` scope, for the ghcr.io image cache.
+- **Your LLM API keys**, for each `--harness-secret`.
+
+### Step 1: bootstrap (once per account, by an admin)
+
+This is the only step that needs IAM admin rights. It creates:
+
+| Created | Purpose |
+|---|---|
+| `omni-ecs-cfn` role | CloudFormation uses it to build and delete deployments. It can only touch resources named `omni-ecs-*`. |
+| `omni-ecs-boundary` policy | Upper limit on every role a deployment creates. The `omni-ecs-cfn` role can't create a role without it, or remove it. |
+| `omni-ecs-server-runtime` policy | Attached to the Omnigent server's role: launch and stop sandboxes. |
+| `omni-ecs-operator` policy | Attached to whoever runs `setup`/`teardown` (the server role unless you name another). |
+
+```bash
+omnigent-ecs bootstrap --print-template > bootstrap.yaml   # review it first
+omnigent-ecs bootstrap --server-role <omnigent-server-role-name> [--operator-role <name>]
+```
+
+An admin can also deploy the printed template themselves, as a stack named `omni-ecs-bootstrap`.
+
+### Step 2: setup (by the operator)
+
+```bash
+omnigent-ecs setup \
+  --name prod \
+  --server-url https://omnigent.example.com \
+  --subnets subnet-0123456789abcdef0,subnet-0123456789abcdef1 \
+  --harness-secret ANTHROPIC_API_KEY \
+  --write-config /path/to/omnigent/server/config.yaml
+```
+
+It:
+1. Checks the subnets (one VPC, one per AZ, a route to the internet).
+2. Prompts for the GitHub token and each harness secret with hidden input, and stores them in Secrets Manager. Existing secrets are reused without prompting; `--rotate-secrets` asks again. For automation, set `OMNI_ECS_GHCR_USERNAME`, `OMNI_ECS_GHCR_TOKEN` and `OMNI_ECS_SECRET_<NAME>` instead.
+3. Creates or updates the `omni-ecs-prod` stack: ECS cluster (Fargate and Fargate Spot), security groups, encrypted EFS with mount targets, the ghcr.io pull-through cache rule, a log group, and the task execution and task roles (under the boundary).
+4. Writes the `sandbox:` section into the server config (the previous file is kept as a `.bak-<time>` copy), or prints it if you leave out `--write-config`. Secret values never go into the config, only their ARNs.
+
+Re-running `setup` is safe; it updates the stack in place. Useful options: `--spot`, `--cpu`/`--memory`, `--arch X86_64`, `--no-efs`, `--image-tag`, `--idle-timeout`. See `omnigent-ecs setup --help`.
+
+Then make sure the server image includes this package, and restart the server.
+
+### Check a deployment
+
+```bash
+omnigent-ecs status --name prod
+```
+
+Shows the stack, how many sandboxes are running, and how many task definitions and launch-token secrets exist.
+
+### Step 3: teardown
+
+```bash
+omnigent-ecs teardown --name prod --write-config /path/to/omnigent/server/config.yaml
+```
+
+You're asked to type the stack name to confirm. Then, in this order:
+
+1. Stops every running sandbox task.
+2. Removes the sandboxes' task definitions and EFS access points (the plugin creates these at runtime, outside the stack).
+3. Deletes the cached images in ECR.
+4. Deletes the stack.
+5. Deletes the deployment's secrets (last, so a failed stack delete can be retried).
+6. Removes the `sandbox:` section from the server config.
+
+**The EFS file system is kept by default**, because it holds every sandbox's workspace. Re-attach it with `setup --existing-efs fs-…`, or delete it with `teardown --delete-data`. `--delete-data` only deletes a file system this deployment created.
+
+To remove the bootstrap as well: `omnigent-ecs bootstrap --delete` (after every deployment is torn down).
+
+## Manual setup
+
+The same resources, created by hand. Use this if you manage infrastructure with your own tooling.
 
 ## 1. Networking
 
@@ -15,14 +99,42 @@ One-time setup for the `ecs` provider. All ids below are placeholders; keep your
 
 ## 3. Image
 
-Mirror the official host image into ECR in the same region, so tasks start faster and don't depend on a public registry:
+Serve the official host image (`ghcr.io/omnigent-ai/omnigent-host`) from ECR in the same region, so tasks pull it over the AWS network and don't depend on GitHub's registry being up.
 
-```bash
-# Pick the tag matching your server version; ARM64 for Graviton.
-docker pull ghcr.io/omnigent-ai/omnigent-host:v0.17.0
-docker tag  ghcr.io/omnigent-ai/omnigent-host:v0.17.0 <account>.dkr.ecr.<region>.amazonaws.com/omnigent-host:v0.17.0
-docker push <account>.dkr.ecr.<region>.amazonaws.com/omnigent-host:v0.17.0
-```
+**Recommended: an ECR pull-through cache rule.** ECR fetches the image from `ghcr.io` the first time a task asks for it, then serves it from your account and keeps it in sync. Nothing to copy by hand when you upgrade; you change the tag in the config.
+
+1. **GitHub credentials.** ECR requires credentials for `ghcr.io`, even for public images. Create a GitHub token with only the `read:packages` scope and store it in Secrets Manager. The secret name **must** start with `ecr-pullthroughcache/`, and it must be in the same region as the rule:
+
+   ```bash
+   # Run from your own shell; never commit this token or paste it into the repo.
+   aws secretsmanager create-secret \
+     --name ecr-pullthroughcache/ghcr \
+     --secret-string '{"username":"<github-user>","accessToken":"<token>"}'
+   ```
+
+2. **The rule.** Map an ECR namespace (here `ghcr`) to `ghcr.io`:
+
+   ```bash
+   aws ecr create-pull-through-cache-rule \
+     --ecr-repository-prefix ghcr \
+     --upstream-registry-url ghcr.io \
+     --credential-arn arn:aws:secretsmanager:REGION:123456789012:secret:ecr-pullthroughcache/ghcr-AbCdEf
+   ```
+
+3. **The image reference** in `sandbox.ecs.image` becomes the upstream path under that namespace. Pin the tag that matches your server version:
+
+   ```
+   123456789012.dkr.ecr.REGION.amazonaws.com/ghcr/omnigent-ai/omnigent-host:v0.17.0
+   ```
+
+4. **First pull.** The ECR repository is created on the first pull, by whoever pulls. For ECS that's the task **execution role**, so it also needs `ecr:CreateRepository` and `ecr:BatchImportUpstreamImage` on the `ghcr/*` repositories (included in [`execution-role-policy.json`](../examples/iam/execution-role-policy.json)). If you'd rather not grant those, pull the image once yourself before the first launch, or pre-create the repository with an ECR repository creation template.
+
+Things to know:
+- ECR checks the upstream for a newer version of a tag at most once every 24 hours. With a pinned version tag that doesn't matter; with `:latest` it means you won't see a new release straight away. Pin version tags.
+- The first launch after a version bump is slower, because ECR fetches the image from `ghcr.io` during that task's start.
+- Add an ECR lifecycle policy to the `ghcr/*` repositories so old versions don't pile up.
+
+**Alternative: copy the image yourself** (`docker pull`, `docker tag`, `docker push` into your own repository). Only worth it if you build your own host image on top of the official one, e.g. with extra tools baked in. In that case push your image to a normal ECR repository from CI.
 
 ## 4. IAM roles
 

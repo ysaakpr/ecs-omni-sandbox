@@ -47,7 +47,17 @@ FROM ghcr.io/omnigent-ai/omnigent-server:v0.17.0
 RUN pip install --no-cache-dir "omnigent-ecs-sandbox @ git+https://github.com/ysaakpr/ecs-omni-sandbox@<tag>"
 ```
 
-Then add a `sandbox:` section to the server config. See [examples/server-config.yaml](examples/server-config.yaml). AWS setup (cluster, roles, networking, EFS) is in [docs/aws-setup.md](docs/aws-setup.md).
+Then create the AWS side with the bundled `omnigent-ecs` command. An admin runs `bootstrap` once to create the roles, after which `setup` builds everything else and writes the server config, and `teardown` deletes it again:
+
+```bash
+omnigent-ecs bootstrap --server-role <omnigent-server-role-name>      # once, as an admin
+omnigent-ecs setup --name prod --server-url https://omnigent.example.com \
+  --subnets subnet-…,subnet-… --harness-secret ANTHROPIC_API_KEY \
+  --write-config /path/to/server/config.yaml
+omnigent-ecs teardown --name prod
+```
+
+Details, and the manual alternative, are in [docs/aws-setup.md](docs/aws-setup.md). An example `sandbox:` section is in [examples/server-config.yaml](examples/server-config.yaml).
 
 The server needs AWS credentials to call ECS, Secrets Manager and EFS. On EC2, use the instance role. Never put access keys in the config.
 

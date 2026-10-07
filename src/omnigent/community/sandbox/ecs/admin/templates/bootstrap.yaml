@@ -1,0 +1,376 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  omni-ecs bootstrap. Deployed ONCE per account by an administrator. Grants the
+  Omnigent server and the person running `omnigent-ecs setup` exactly what they
+  need, and nothing broader. Every resource the setup later creates is named
+  omni-ecs-* and every IAM role it creates is capped by a permissions boundary.
+
+Parameters:
+  ServerRoleName:
+    Type: String
+    Description: >-
+      Name (not ARN) of the IAM role the Omnigent server runs as, e.g. the EC2
+      instance role. Receives the runtime policy (launch and stop sandboxes).
+  OperatorRoleName:
+    Type: String
+    Default: ""
+    Description: >-
+      Name of the IAM role that runs `omnigent-ecs setup/teardown`. Leave empty
+      to use ServerRoleName.
+
+Conditions:
+  SeparateOperator: !Not [!Equals [!Ref OperatorRoleName, ""]]
+
+Resources:
+  # ── Upper bound for every role the setup stack creates ───────────────
+  Boundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: omni-ecs-boundary
+      Description: Maximum permissions of roles created by omni-ecs stacks.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PullImagesAndWriteLogs
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Sid: PullThroughCacheFirstPull
+            Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:BatchImportUpstreamImage
+            Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/omni-ecs-*
+          - Sid: ReadSandboxSecrets
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:omni-ecs/*
+          - Sid: MountSandboxHomes
+            Effect: Allow
+            Action:
+              - elasticfilesystem:ClientMount
+              - elasticfilesystem:ClientWrite
+            Resource: !Sub arn:${AWS::Partition}:elasticfilesystem:*:${AWS::AccountId}:file-system/*
+            Condition:
+              StringLike:
+                aws:ResourceTag/omni-ecs:stack: omni-ecs-*
+
+  # ── Role CloudFormation assumes to build and delete omni-ecs stacks ──
+  CfnServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: omni-ecs-cfn
+      Description: Used by CloudFormation to create and delete omni-ecs-* stacks.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudformation.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {aws:SourceAccount: !Ref AWS::AccountId}
+      Policies:
+        - PolicyName: omni-ecs-stack-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Cluster
+                Effect: Allow
+                Action:
+                  - ecs:CreateCluster
+                  - ecs:DeleteCluster
+                  - ecs:UpdateCluster
+                  - ecs:UpdateClusterSettings
+                  - ecs:PutClusterCapacityProviders
+                  - ecs:TagResource
+                  - ecs:UntagResource
+                Resource: !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:cluster/omni-ecs-*
+              - Sid: ClusterRead
+                Effect: Allow
+                Action: [ecs:DescribeClusters, ecs:ListClusters]
+                Resource: "*"
+              - Sid: NetworkRead
+                Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSecurityGroupRules
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeAvailabilityZones
+                Resource: "*"
+              - Sid: CreateTaggedSecurityGroups
+                Effect: Allow
+                Action: [ec2:CreateSecurityGroup, ec2:CreateTags]
+                Resource: "*"
+              - Sid: ManageOwnSecurityGroups
+                Effect: Allow
+                Action:
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                Resource: !Sub arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:security-group/*
+                Condition:
+                  StringLike:
+                    aws:ResourceTag/omni-ecs:stack: omni-ecs-*
+              - Sid: MountTargetNetworkInterfaces
+                Effect: Allow
+                Action: [ec2:CreateNetworkInterface, ec2:DeleteNetworkInterface]
+                Resource: "*"
+              - Sid: FileSystem
+                Effect: Allow
+                Action:
+                  - elasticfilesystem:CreateFileSystem
+                  - elasticfilesystem:DeleteFileSystem
+                  - elasticfilesystem:DescribeFileSystems
+                  - elasticfilesystem:CreateMountTarget
+                  - elasticfilesystem:DeleteMountTarget
+                  - elasticfilesystem:DescribeMountTargets
+                  - elasticfilesystem:DescribeMountTargetSecurityGroups
+                  - elasticfilesystem:ModifyMountTargetSecurityGroups
+                  - elasticfilesystem:PutLifecycleConfiguration
+                  - elasticfilesystem:DescribeLifecycleConfiguration
+                  - elasticfilesystem:PutBackupPolicy
+                  - elasticfilesystem:DescribeBackupPolicy
+                  - elasticfilesystem:TagResource
+                  - elasticfilesystem:UntagResource
+                  - elasticfilesystem:ListTagsForResource
+                Resource: "*"
+              - Sid: FileSystemEncryptionKey
+                Effect: Allow
+                Action: [kms:DescribeKey, kms:CreateGrant]
+                Resource: "*"
+                Condition:
+                  StringLike: {kms:ViaService: elasticfilesystem.*.amazonaws.com}
+              - Sid: ImageCacheRule
+                Effect: Allow
+                Action:
+                  - ecr:CreatePullThroughCacheRule
+                  - ecr:DeletePullThroughCacheRule
+                  - ecr:DescribePullThroughCacheRules
+                  - ecr:UpdatePullThroughCacheRule
+                  - ecr:ValidatePullThroughCacheRule
+                Resource: "*"
+              - Sid: ImageCacheCredential
+                Effect: Allow
+                Action: [secretsmanager:DescribeSecret, secretsmanager:GetSecretValue]
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:ecr-pullthroughcache/omni-ecs-*
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:ListTagsForResource
+                Resource: !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/omni-ecs/*
+              - Sid: LogsRead
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: "*"
+              - Sid: CreateRolesOnlyUnderTheBoundary
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:PutRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:PutRolePermissionsBoundary
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/omni-ecs-*
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref Boundary
+              - Sid: ManageOwnRoles
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:DeleteRole
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/omni-ecs-*
+              - Sid: NeverLiftTheBoundary
+                Effect: Deny
+                Action: iam:DeleteRolePermissionsBoundary
+                Resource: "*"
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - ecs.amazonaws.com
+                      - elasticfilesystem.amazonaws.com
+                      - pullthroughcache.ecr.amazonaws.com
+
+  # ── Runtime: what the Omnigent server needs to launch sandboxes ──────
+  ServerRuntimePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: omni-ecs-server-runtime
+      Description: Lets the Omnigent server launch and stop omni-ecs sandboxes.
+      Roles: [!Ref ServerRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RunSandboxTasks
+            Effect: Allow
+            Action: ecs:RunTask
+            Resource: !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:task-definition/omni-ecs-*
+            Condition:
+              ArnLike:
+                ecs:cluster: !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:cluster/omni-ecs-*
+          - Sid: StopAndDescribeSandboxTasks
+            Effect: Allow
+            Action: [ecs:StopTask, ecs:DescribeTasks]
+            Resource: !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:task/omni-ecs-*/*
+          - Sid: TagSandboxTasks
+            Effect: Allow
+            Action: ecs:TagResource
+            Resource:
+              - !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:task/omni-ecs-*/*
+              - !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:task-definition/omni-ecs-*
+          - Sid: TaskDefinitionsAndLookups
+            Effect: Allow
+            Action:
+              - ecs:RegisterTaskDefinition
+              - ecs:DeregisterTaskDefinition
+              - ecs:DeleteTaskDefinitions
+              - ecs:ListTaskDefinitions
+              - ecs:ListTasks
+              - ecs:DescribeClusters
+            Resource: "*"
+          - Sid: PassOnlySandboxRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/omni-ecs-*-exec
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/omni-ecs-*-task
+            Condition:
+              StringEquals: {iam:PassedToService: ecs-tasks.amazonaws.com}
+          - Sid: LaunchTokenSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+              - secretsmanager:DeleteSecret
+              - secretsmanager:TagResource
+            Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:omni-ecs/*/tokens/*
+          - Sid: FindSecrets
+            Effect: Allow
+            Action: secretsmanager:ListSecrets
+            Resource: "*"
+          - Sid: SandboxAccessPoints
+            Effect: Allow
+            Action:
+              - elasticfilesystem:CreateAccessPoint
+              - elasticfilesystem:TagResource
+            Resource: "*"
+            Condition:
+              StringLike:
+                aws:ResourceTag/omni-ecs:stack: omni-ecs-*
+          - Sid: SandboxAccessPointsCleanup
+            Effect: Allow
+            Action:
+              - elasticfilesystem:DeleteAccessPoint
+              - elasticfilesystem:DescribeAccessPoints
+            Resource: "*"
+
+  # ── Operator: what `omnigent-ecs setup/status/teardown` needs ────────
+  OperatorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: omni-ecs-operator
+      Description: Lets an operator run omnigent-ecs setup, status and teardown.
+      Roles:
+        - !If [SeparateOperator, !Ref OperatorRoleName, !Ref ServerRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Stacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:ListStackResources
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/omni-ecs-*/*
+          - Sid: ValidateTemplates
+            Effect: Allow
+            Action: cloudformation:ValidateTemplate
+            Resource: "*"
+          - Sid: HandStacksToCloudFormation
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt CfnServiceRole.Arn
+            Condition:
+              StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
+          - Sid: SetupSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+              - secretsmanager:PutSecretValue
+              - secretsmanager:DescribeSecret
+              - secretsmanager:DeleteSecret
+              - secretsmanager:TagResource
+            Resource:
+              - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:omni-ecs/*
+              - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:ecr-pullthroughcache/omni-ecs-*
+          - Sid: Discovery
+            Effect: Allow
+            Action:
+              - ec2:DescribeSubnets
+              - ec2:DescribeRouteTables
+              - secretsmanager:ListSecrets
+              - ecs:ListTasks
+              - ecs:ListTaskDefinitionFamilies
+              - ecs:ListTaskDefinitions
+              - ecs:DeregisterTaskDefinition
+              - ecs:DeleteTaskDefinitions
+              - elasticfilesystem:DescribeAccessPoints
+              - elasticfilesystem:DescribeFileSystems
+              - elasticfilesystem:DescribeMountTargets
+              - ecr:DescribeRepositories
+            Resource: "*"
+          - Sid: TeardownTasks
+            Effect: Allow
+            Action: [ecs:StopTask, ecs:DescribeTasks]
+            Resource: !Sub arn:${AWS::Partition}:ecs:*:${AWS::AccountId}:task/omni-ecs-*/*
+          - Sid: TeardownStorageAndImages
+            Effect: Allow
+            Action:
+              - elasticfilesystem:DeleteAccessPoint
+              - elasticfilesystem:DeleteFileSystem
+            Resource: "*"
+            Condition:
+              StringLike:
+                aws:ResourceTag/omni-ecs:stack: omni-ecs-*
+          - Sid: TeardownCachedImages
+            Effect: Allow
+            Action: ecr:DeleteRepository
+            Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/omni-ecs-*
+
+Outputs:
+  CfnServiceRoleArn:
+    Value: !GetAtt CfnServiceRole.Arn
+  BoundaryArn:
+    Value: !Ref Boundary

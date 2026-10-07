@@ -25,7 +25,8 @@ sandbox:
     execution_role_arn: arn:aws:iam::123456789012:role/omnigent-ecs-execution
     task_role_arn: arn:aws:iam::123456789012:role/omnigent-ecs-task  # EFS client access only
 
-    image: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/omnigent-host:v0.17.0
+    # ECR pull-through cache of ghcr.io/omnigent-ai/omnigent-host (docs/aws-setup.md, step 3)
+    image: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/ghcr/omnigent-ai/omnigent-host:v0.17.0
     cpu: "1024"            # 1 vCPU
     memory: "4096"         # MiB
     cpu_architecture: ARM64
