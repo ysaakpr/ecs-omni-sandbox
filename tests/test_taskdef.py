@@ -56,6 +56,14 @@ def test_container_chain_without_efs() -> None:
     assert td["volumes"] == [{"name": "home"}]
 
 
+def test_sandbox_user_containers_start_in_home() -> None:
+    # The image's WORKDIR (/root) is unreadable to the sandbox user; `omnigent
+    # host` crashed with PermissionError on ./.omnigent/config.yaml there.
+    c = _containers(_taskdef(EcsSandboxConfig(**base_config())))
+    assert c["workspace-prep"]["workingDirectory"] == "/home/omnigent"
+    assert c["host"]["workingDirectory"] == "/home/omnigent"
+
+
 def test_efs_home_skips_root_init() -> None:
     config = EcsSandboxConfig(
         **base_config(

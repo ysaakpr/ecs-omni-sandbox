@@ -342,9 +342,14 @@ def status(ctx: click.Context, name: str, region: str | None) -> None:
         familyPrefix=f"{names.task_family_prefix}-", status="ACTIVE"
     )["families"]
     click.echo(f"Sandbox task definitions: {len(families)}")
-    tokens = aws.client("secretsmanager").list_secrets(
-        Filters=[{"Key": "name", "Values": [names.token_secret_prefix]}]
-    )["SecretList"]
+    # The name filter matches loosely, so check the prefix ourselves.
+    tokens = [
+        secret
+        for secret in aws.client("secretsmanager").list_secrets(
+            Filters=[{"Key": "name", "Values": [names.token_secret_prefix]}]
+        )["SecretList"]
+        if secret["Name"].startswith(names.token_secret_prefix)
+    ]
     click.echo(f"Launch-token secrets: {len(tokens)}")
 
 

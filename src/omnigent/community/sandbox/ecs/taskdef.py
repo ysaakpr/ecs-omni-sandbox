@@ -135,6 +135,9 @@ def build_task_definition(
         "image": image,
         "essential": False,
         "user": run_as,
+        # The image's WORKDIR is /root, unreadable to the sandbox user, and
+        # `omnigent host` reads ./.omnigent/config.yaml from its cwd at startup.
+        "workingDirectory": HOME_DIR,
         "entryPoint": [],
         "command": render_workspace_prep_command(
             WORKSPACE_DIR, repos, server_url, host_id, host_config
@@ -161,6 +164,7 @@ def build_task_definition(
             "image": image,
             "essential": True,
             "user": run_as,
+            "workingDirectory": HOME_DIR,
             "entryPoint": [],
             "command": render_host_command(server_url),
             "environment": host_env,
