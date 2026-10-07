@@ -13,6 +13,7 @@ written to the server config, and never passed to CloudFormation.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from getpass import getpass
 from pathlib import Path
@@ -29,6 +30,7 @@ from omnigent.community.sandbox.ecs.admin.naming import (
     STACK_TAG,
     Names,
 )
+from omnigent.community.sandbox.ecs.config import RESERVED_ENV_NAMES, env_name_is_sensitive
 
 ClientFactory = Callable[[str], Any]
 
@@ -181,9 +183,18 @@ def bootstrap(
     "--harness-secret",
     "harness_secrets",
     multiple=True,
-    metavar="ENV_NAME",
+    metavar="NAME[=SOURCE]",
     help="Env var to give sandboxes from Secrets Manager, e.g. ANTHROPIC_API_KEY. Repeatable. "
-    "You're prompted for the value (or set OMNI_ECS_SECRET_<ENV_NAME>).",
+    "You're prompted for the value (or set OMNI_ECS_SECRET_<NAME>). NAME=SOURCE reuses "
+    "another harness secret under a second name, e.g. GH_TOKEN=GIT_TOKEN for the gh CLI.",
+)
+@click.option(
+    "--env",
+    "env_vars",
+    multiple=True,
+    metavar="NAME=VALUE",
+    help="Non-secret env var for sandboxes, e.g. GIT_AUTHOR_NAME='Omni Agent'. Repeatable. "
+    "Credential-like names are rejected; use --harness-secret for those.",
 )
 @click.option("--rotate-secrets", is_flag=True, help="Prompt again for existing secrets.")
 @click.option(
@@ -213,6 +224,7 @@ def setup(
     arch: str,
     image_tag: str | None,
     harness_secrets: tuple[str, ...],
+    env_vars: tuple[str, ...],
     rotate_secrets: bool,
     idle_timeout: int,
     log_retention_days: int,
@@ -223,6 +235,8 @@ def setup(
 ) -> None:
     """Create or update a deployment. Safe to re-run."""
     names = _names(name)
+    stored, aliases = _parse_harness_secrets(harness_secrets)
+    env = _parse_env(env_vars)
     aws = _aws(ctx, region)
     account, partition = aws.identity()
     subnet_ids = [s.strip() for s in subnets.split(",") if s.strip()]
@@ -259,8 +273,10 @@ def setup(
             tags=tags,
             rotate=rotate_secrets,
         )
-        for env in harness_secrets
+        for env in stored
     }
+    # A second name for an existing secret: same ARN, nothing new stored.
+    harness_arns.update({alias: harness_arns[source] for alias, source in aliases.items()})
 
     cfn_role = f"arn:{partition}:iam::{account}:role/{CFN_SERVICE_ROLE}"
     boundary = f"arn:{partition}:iam::{account}:policy/{BOUNDARY_POLICY}"
@@ -292,6 +308,7 @@ def setup(
         server_url=server_url,
         subnets=subnet_ids,
         harness_secrets=harness_arns,
+        env=env,
         image_tag=image_tag,
         cpu=cpu,
         memory=memory,
@@ -432,6 +449,54 @@ def teardown(
     if write_config is not None and ops.remove_from_server_config(write_config, names.stack):
         click.echo(f"▸ Removed the sandbox section from {write_config}")
     click.echo(f"\n✓ {names.stack} is gone. Restart the Omnigent server to drop the provider.")
+
+
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_harness_secrets(values: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
+    """Split ``NAME`` / ``NAME=SOURCE`` options into stored names and aliases."""
+    stored: list[str] = []
+    aliases: dict[str, str] = {}
+    for value in values:
+        name, _, source = value.partition("=")
+        for part in filter(None, (name, source)):
+            if not _ENV_NAME.match(part):
+                raise click.BadParameter(
+                    f"{part!r} isn't a valid env var name", param_hint="--harness-secret"
+                )
+        if source:
+            aliases[name] = source
+        elif name not in stored:
+            stored.append(name)
+    for alias, source in aliases.items():
+        if source not in stored:
+            raise click.BadParameter(
+                f"{alias}={source}: also pass --harness-secret {source}",
+                param_hint="--harness-secret",
+            )
+        if alias in stored:
+            raise click.BadParameter(
+                f"{alias} is both a secret and an alias", param_hint="--harness-secret"
+            )
+    return stored, aliases
+
+
+def _parse_env(values: tuple[str, ...]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for value in values:
+        name, sep, val = value.partition("=")
+        if not sep or not _ENV_NAME.match(name):
+            raise click.BadParameter(f"expected NAME=VALUE, got {value!r}", param_hint="--env")
+        # Checked here, before anything is created in AWS.
+        if name in RESERVED_ENV_NAMES:
+            raise click.BadParameter(f"{name} is set by the task itself", param_hint="--env")
+        if env_name_is_sensitive(name):
+            raise click.BadParameter(
+                f"{name} looks like a credential; use --harness-secret {name}", param_hint="--env"
+            )
+        env[name] = val
+    return env
 
 
 def _names(name: str) -> Names:

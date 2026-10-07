@@ -345,6 +345,7 @@ def build_sandbox_section(
     server_url: str,
     subnets: list[str],
     harness_secrets: dict[str, str],
+    env: dict[str, str] | None = None,
     image_tag: str,
     cpu: str,
     memory: str,
@@ -368,6 +369,7 @@ def build_sandbox_section(
         "cpu_architecture": cpu_architecture,
         "capacity_provider": capacity_provider,
         "secrets": harness_secrets,
+        "env": with_runner_passthrough(env or {}, harness_secrets),
         "log_group": outputs["LogGroupName"],
         "token_secret_prefix": names.token_secret_prefix,
         "task_family_prefix": names.task_family_prefix,
@@ -386,6 +388,27 @@ def build_sandbox_section(
     if idle_timeout_s:
         section["host_config"] = {"runner": {"idle_timeout_s": idle_timeout_s}}
     return section
+
+
+PASSTHROUGH_ENV = "OMNIGENT_RUNNER_ENV_PASSTHROUGH"
+
+
+def with_runner_passthrough(env: dict[str, str], secrets: dict[str, str]) -> dict[str, str]:
+    """Add every configured name the host wouldn't forward to the agent by itself.
+
+    ``omnigent host`` only passes an allowlist of credential env vars (e.g.
+    ``GIT_TOKEN``, ``ANTHROPIC_API_KEY``) on to the agent's runner. Anything
+    else the operator configures, such as ``GH_TOKEN`` for the gh CLI or
+    ``GIT_AUTHOR_NAME``, has to be named in ``OMNIGENT_RUNNER_ENV_PASSTHROUGH``.
+    """
+    from omnigent.host.connect import HARNESS_CREDENTIAL_ENV_VARS
+
+    wanted = {n for n in [*env, *secrets] if n != PASSTHROUGH_ENV} - HARNESS_CREDENTIAL_ENV_VARS
+    existing = {n.strip() for n in env.get(PASSTHROUGH_ENV, "").split(",") if n.strip()}
+    merged = dict(env)
+    if wanted | existing:
+        merged[PASSTHROUGH_ENV] = ",".join(sorted(wanted | existing))
+    return merged
 
 
 def write_server_config(path: Path, section: dict[str, Any], *, force: bool) -> Path | None:

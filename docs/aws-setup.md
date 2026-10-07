@@ -55,6 +55,26 @@ Re-running `setup` is safe; it updates the stack in place. Useful options: `--sp
 
 Then make sure the server image includes this package, and restart the server.
 
+### Git and the gh CLI in sandboxes
+
+Without an Omnigent GitHub App, sandboxes get git access from one shared token:
+
+```bash
+omnigent-ecs setup ... \
+  --harness-secret CLAUDE_CODE_OAUTH_TOKEN \
+  --harness-secret GIT_TOKEN \
+  --harness-secret GH_TOKEN=GIT_TOKEN \
+  --env GIT_AUTHOR_NAME="Omni Agent" --env GIT_AUTHOR_EMAIL=agent@example.com \
+  --env GIT_COMMITTER_NAME="Omni Agent" --env GIT_COMMITTER_EMAIL=agent@example.com
+```
+
+- `GIT_TOKEN`: the host image's git credential helper uses it for HTTPS clone, pull and push. Use a fine-grained token limited to the repos the agent needs.
+- `GH_TOKEN=GIT_TOKEN`: the gh CLI reads `GH_TOKEN`; this reuses the same stored secret, so there's one token to rotate.
+- `--env`: non-secret settings, here the identity on the agent's commits.
+- `setup` adds every name Omnigent doesn't forward to the agent by default (here `GH_TOKEN` and the `GIT_*` identity) to `OMNIGENT_RUNNER_ENV_PASSTHROUGH` for you.
+
+Pass every `--harness-secret` and `--env` on each run: the server config's `sandbox:` section is rebuilt from the options. Existing secrets are reused without prompting. Only HTTPS remotes work; the task security group allows no SSH.
+
 ### Check a deployment
 
 ```bash

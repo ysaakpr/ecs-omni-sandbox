@@ -425,3 +425,62 @@ def test_bootstrap(run, fake_cfn: FakeCfn) -> None:
     [(kind, call)] = fake_cfn.calls
     assert kind == "create" and call["StackName"] == "omni-ecs-bootstrap" and "RoleARN" not in call
     assert "omni-ecs-cfn" in result.output
+
+
+def test_setup_aliases_gh_token_and_passes_extra_env(
+    run, network: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNI_ECS_SECRET_GIT_TOKEN", "git-token-for-tests")  # gitleaks:allow
+    config = tmp_path / "config.yaml"
+    result = _setup(
+        run,
+        network,
+        "--harness-secret", "GIT_TOKEN",
+        "--harness-secret", "GH_TOKEN=GIT_TOKEN",
+        "--env", "GIT_AUTHOR_NAME=Omni Agent",
+        "--write-config", str(config),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    ecs = yaml.safe_load(config.read_text())["sandbox"]["ecs"]
+    assert ecs["secrets"]["GH_TOKEN"] == ecs["secrets"]["GIT_TOKEN"]
+    assert ecs["env"]["GIT_AUTHOR_NAME"] == "Omni Agent"
+    # Only names the host doesn't already forward to the agent.
+    assert ecs["env"]["OMNIGENT_RUNNER_ENV_PASSTHROUGH"] == "GH_TOKEN,GIT_AUTHOR_NAME"
+    # The alias stored nothing new.
+    names = [
+        s["Name"]
+        for s in boto3.client("secretsmanager", region_name=REGION).list_secrets()["SecretList"]
+    ]
+    assert not any(n.endswith("/GH_TOKEN") for n in names)
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--harness-secret", "GH_TOKEN=GIT_TOKEN"], "also pass --harness-secret GIT_TOKEN"),
+        (["--env", "NOVALUE"], "expected NAME=VALUE"),
+        (["--env", "GIT_TOKEN=literal"], "looks like a credential"),
+    ],
+)
+def test_setup_rejects_bad_secret_and_env_options(
+    run, network: dict[str, str], args: list[str], message: str
+) -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "setup",
+            "--name",
+            "dev",
+            "--server-url",
+            "https://omnigent.example.com",
+            "--subnets",
+            network["private"],
+            "--region",
+            REGION,
+            "--yes",
+            *args,
+        ],  # fmt: skip
+        obj={"client_factory": lambda s: boto3.client(s, region_name=REGION)},
+    )
+    assert result.exit_code != 0
+    assert message in result.output
