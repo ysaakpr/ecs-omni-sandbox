@@ -340,6 +340,7 @@ def test_setup_creates_secrets_stack_and_config(
     assert ecs["image"].endswith("/omni-ecs-dev/omnigent-ai/omnigent-host:v0.17.0")
     assert ecs["secrets"]["ANTHROPIC_API_KEY"].startswith("arn:aws:secretsmanager:")
     assert ecs["token_secret_prefix"] == "omni-ecs/omni-ecs-dev/tokens/"
+    assert ecs["idle_stop_after_s"] == 900
 
     # Re-running is safe: secrets reused, stack update is a no-op.
     again = _setup(run, network, "--write-config", str(config))

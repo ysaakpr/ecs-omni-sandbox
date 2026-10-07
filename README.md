@@ -27,6 +27,16 @@ Omnigent server (EC2)                      AWS
 
 The containers run the same commands as Omnigent's built-in Kubernetes provider: the repo-clone script and the host command are reused from it.
 
+## When tasks stop
+
+A task runs `omnigent host` under a small supervisor (`supervisor.py`), which also stops the task when the sandbox is idle:
+
+1. The agent's runner exits by itself after `runner.idle_timeout_s` with no activity (1 hour by default).
+2. Once there's no runner and nothing else in the container is using CPU (a background job the agent started still counts as busy), the supervisor waits `idle_stop_after_s` (15 minutes by default), then stops the host cleanly. ECS stops the task and billing stops.
+3. The next message to the session wakes it: Omnigent starts a new task under the same host id, and with EFS the workspace is still there.
+
+Tasks also stop when the session is deleted, on `omnigent-ecs teardown`, on a Fargate Spot interruption, and when AWS retires a task for maintenance. Open terminals with nothing running in them don't keep a task alive. Set `idle_stop_after_s: 0` (`setup --idle-stop-after 0`) to keep tasks running until their session is deleted.
+
 ## Persistence
 
 | Data | Stored in | Survives the task stopping? |
@@ -86,7 +96,7 @@ uv run ruff check . && uv run ruff format --check .
 - [ ] First end-to-end run against a real ECS cluster
 - [ ] Cleanup job for EFS directories of terminated sandboxes
 - [ ] Sweep for orphaned tasks, secrets and task definitions (by `managed-by` tag)
-- [ ] Idle shutdown guidance (`host_config.runner.idle_timeout_s`)
+- [x] Idle stop: tasks stop themselves when idle and wake on the next message
 - [ ] Optional Fargate Spot fallback to on-demand
 - [ ] Publish to PyPI
 

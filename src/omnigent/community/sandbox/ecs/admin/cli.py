@@ -200,6 +200,13 @@ def bootstrap(
 @click.option(
     "--idle-timeout", default=3600, show_default=True, help="Seconds before an idle runner exits."
 )
+@click.option(
+    "--idle-stop-after",
+    default=900,
+    show_default=True,
+    help="Seconds a sandbox may sit with no session and no CPU use before its task stops "
+    "(it wakes on the next message). 0 keeps tasks running until the session is deleted.",
+)
 @click.option("--log-retention-days", default=30, show_default=True)
 @click.option(
     "--write-config",
@@ -227,6 +234,7 @@ def setup(
     env_vars: tuple[str, ...],
     rotate_secrets: bool,
     idle_timeout: int,
+    idle_stop_after: int,
     log_retention_days: int,
     write_config: Path | None,
     force: bool,
@@ -316,6 +324,7 @@ def setup(
         capacity_provider="FARGATE_SPOT" if spot else "FARGATE",
         assign_public_ip=assign_public_ip,
         idle_timeout_s=idle_timeout,
+        idle_stop_after_s=idle_stop_after,
     )
     if write_config is not None:
         backup = ops.write_server_config(write_config, section, force=force)

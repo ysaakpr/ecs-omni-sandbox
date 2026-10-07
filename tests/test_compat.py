@@ -7,11 +7,19 @@ import inspect
 from omnigent.community.sandbox.ecs import _omnigent_compat as compat
 
 
-def test_reused_renderers_keep_their_shape() -> None:
+def test_reused_renderer_keeps_its_shape() -> None:
     prep = compat.render_workspace_prep_command("/home/omnigent/workspace", (), "https://s", "h1")
-    host = compat.render_host_command("https://s")
     assert prep[:2] == ["bash", "-lc"] and "mkdir -p /home/omnigent/workspace" in prep[2]
-    assert host[:2] == ["bash", "-lc"] and "omnigent host --server https://s" in host[2]
+
+
+def test_runner_process_names_the_supervisor_looks_for_still_exist() -> None:
+    # supervisor.py spots runners by these module names in their cmdline.
+    import importlib.util
+
+    from omnigent.community.sandbox.ecs import supervisor
+
+    for module in (supervisor.RUNNER_ENTRY, supervisor.ZYGOTE):
+        assert importlib.util.find_spec(module) is not None, module
 
 
 def test_start_host_signature_matches_the_base_class() -> None:

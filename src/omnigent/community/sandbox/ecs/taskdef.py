@@ -20,9 +20,12 @@ never appears in a task definition, a RunTask request, or CloudTrail.
 from __future__ import annotations
 
 import posixpath
+import shlex
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
+from omnigent.community.sandbox.ecs import supervisor
 from omnigent.community.sandbox.ecs._omnigent_compat import (
     DEFAULT_HOST_IMAGE,
     HOME_DIR,
@@ -32,7 +35,6 @@ from omnigent.community.sandbox.ecs._omnigent_compat import (
     RUN_AS_GID,
     RUN_AS_UID,
     RepoWorkspace,
-    render_host_command,
     render_workspace_prep_command,
 )
 from omnigent.community.sandbox.ecs.config import EcsSandboxConfig
@@ -46,6 +48,21 @@ SANDBOX_ID_TAG = "omnigent:sandbox-id"
 HOST_ID_TAG = "omnigent:host-id"
 
 WORKSPACE_DIR = f"{HOME_DIR}/workspace"
+
+
+def host_command(server_url: str) -> list[str]:
+    """``omnigent host`` under the PID-1 supervisor (reaping + idle stop).
+
+    The supervisor's source is passed to ``python3 -c`` because the host image
+    doesn't have this package. ``bash -lc`` + ``exec`` puts the image's venv on
+    PATH and makes the supervisor PID 1.
+    """
+    source = Path(supervisor.__file__).read_text()
+    return [
+        "bash",
+        "-lc",
+        f"exec python3 -c {shlex.quote(source)} omnigent host --server {shlex.quote(server_url)}",
+    ]
 
 
 def task_family(config: EcsSandboxConfig, sandbox_id: str) -> str:
@@ -156,6 +173,8 @@ def build_task_definition(
         {"name": "IS_SANDBOX", "value": "1"},
         {"name": HOST_ID_ENV_VAR, "value": host_id},
         {"name": HOST_NAME_ENV_VAR, "value": host_name},
+        {"name": "OMNI_ECS_IDLE_STOP_AFTER_S", "value": str(config.idle_stop_after_s)},
+        {"name": "OMNI_ECS_IDLE_CPU_THRESHOLD", "value": str(config.idle_cpu_threshold)},
         *({"name": n, "value": v} for n, v in config.env.items()),
     ]
     containers.append(
@@ -166,7 +185,7 @@ def build_task_definition(
             "user": run_as,
             "workingDirectory": HOME_DIR,
             "entryPoint": [],
-            "command": render_host_command(server_url),
+            "command": host_command(server_url),
             "environment": host_env,
             "secrets": [token_secret, *harness_secrets],
             "mountPoints": home_mount,

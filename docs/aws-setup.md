@@ -51,7 +51,7 @@ It:
 3. Creates or updates the `omni-ecs-prod` stack: ECS cluster (Fargate and Fargate Spot), security groups, encrypted EFS with mount targets, the ghcr.io pull-through cache rule, a log group, and the task execution and task roles (under the boundary).
 4. Writes the `sandbox:` section into the server config (the previous file is kept as a `.bak-<time>` copy), or prints it if you leave out `--write-config`. Secret values never go into the config, only their ARNs.
 
-Re-running `setup` is safe; it updates the stack in place. Useful options: `--spot`, `--cpu`/`--memory`, `--arch X86_64`, `--no-efs`, `--image-tag`, `--idle-timeout`. See `omnigent-ecs setup --help`.
+Re-running `setup` is safe; it updates the stack in place. Useful options: `--spot`, `--cpu`/`--memory`, `--arch X86_64`, `--no-efs`, `--image-tag`, `--idle-timeout` (runner idle exit, default 1 hour), `--idle-stop-after` (task stop after the sandbox is idle, default 15 minutes; see the README's "When tasks stop"). See `omnigent-ecs setup --help`.
 
 Then make sure the server image includes this package, and restart the server.
 
